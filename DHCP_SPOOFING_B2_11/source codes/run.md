@@ -1,14 +1,20 @@
-# reset
+# Run from `source codes` and only on a host you control.
 
-sudo pkill -f dnsmasq  
-sudo pkill dhcpd  
-sudo ip link del v-victim 2>/dev/null  
-sudo ip link del b-victim 2>/dev/null  
-sudo ip link del v-legit 2>/dev/null  
-sudo ip link del b-legit 2>/dev/null  
-sudo ip link del v-attacker 2>/dev/null  
-sudo ip link del b-attacker 2>/dev/null  
-sudo ip link del br0
+# reset -- stop namespace processes, then remove the previous lab
+for ns in victim legit attacker; do
+  sudo ip netns pids "$ns" 2>/dev/null | xargs -r sudo kill
+done
+sudo ip link del b-victim 2>/dev/null
+sudo ip link del b-legit 2>/dev/null
+sudo ip link del b-attacker 2>/dev/null
+sudo ip link del br0 2>/dev/null
+sudo ip netns del victim 2>/dev/null
+sudo ip netns del legit 2>/dev/null
+sudo ip netns del attacker 2>/dev/null
+
+# Start each experiment with fresh generated logs.
+: > logs/attacker.log
+: > logs/dhcp_guard_alerts.log
 
 # setup sandbox 
 
@@ -36,6 +42,8 @@ sudo ip netns exec legit dnsmasq \
   --dhcp-option=6,8.8.8.8 \
   --no-daemon --log-dhcp
 
+# Start the following long-running services in separate terminals.
+
 # start attacker server 
 
 sudo ip netns exec attacker \
@@ -49,13 +57,15 @@ sudo ip netns exec attacker \
   --pool-end 10.0.0.220 \
   --lease-time 300
 
-# start the victim
+# start the victim (after the server, guard, and rogue-server simulation)
 
+sudo ip netns exec victim dhclient -v -1 v-victim
+sudo ip netns exec victim ip addr show dev v-victim
 sudo ip netns exec victim ip route
 
 # running defense 
 
-sudo ip netns exec legit ip addr show v-legit ## to show the mac and ip address of real server
+sudo ip netns exec legit ip addr show v-legit # copy its current MAC into trusted_servers.json
 
 sudo ip netns exec victim \
   python3 defender/dhcp_guard.py \

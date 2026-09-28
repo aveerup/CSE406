@@ -1,0 +1,1 @@
+sudo ip netns exec victim dhclient -v -1 v-victim

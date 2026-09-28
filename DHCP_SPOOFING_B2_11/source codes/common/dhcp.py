@@ -72,25 +72,53 @@ def parse_dhcp_packet(data: bytes) -> dict:
     (op, htype, hlen, hops, xid, secs, flags,
      ciaddr, yiaddr, siaddr, giaddr, chaddr, _sname, _file) = fields
 
+    # This lab is Ethernet-only, so a DHCP hardware address must be a MAC.
+    if htype != 1 or hlen != 6:
+        return None
+
     magic = struct.unpack("!I", data[_FIXED_LEN:_FIXED_LEN + 4])[0]
     if magic != MAGIC_COOKIE:
         return None
 
     options = {}
+    saw_end = False
     i = _FIXED_LEN + 4
     while i < len(data):
         code = data[i]
         if code == OPT_END:
+            saw_end = True
             break
         if code == 0:
             i += 1
             continue
+        if i + 2 > len(data):
+            return None
         length = data[i + 1]
+        if i + 2 + length > len(data):
+            return None
         value = data[i + 2:i + 2 + length]
         options[code] = value
         i += 2 + length
 
+    if not saw_end:
+        return None
+
     msg_type = options.get(OPT_MSG_TYPE)
+    if msg_type is not None and len(msg_type) != 1:
+        return None
+
+    def option_ip(code):
+        raw = options.get(code)
+        if raw is None:
+            return None
+        if len(raw) != 4:
+            return None
+        return socket.inet_ntoa(raw)
+
+    requested_ip = option_ip(OPT_REQUESTED_IP)
+    server_id = option_ip(OPT_SERVER_ID)
+    if (OPT_REQUESTED_IP in options and requested_ip is None) or (OPT_SERVER_ID in options and server_id is None):
+        return None
     return {
         "op": op,
         "xid": xid,
@@ -101,6 +129,6 @@ def parse_dhcp_packet(data: bytes) -> dict:
         "chaddr": mac_to_str(chaddr[:6]),
         "options": options,
         "msg_type": msg_type[0] if msg_type else None,
-        "requested_ip": socket.inet_ntoa(options[OPT_REQUESTED_IP]) if OPT_REQUESTED_IP in options else None,
-        "server_id": socket.inet_ntoa(options[OPT_SERVER_ID]) if OPT_SERVER_ID in options else None,
+        "requested_ip": requested_ip,
+        "server_id": server_id,
     }

@@ -23,7 +23,11 @@ def build_udp_header(src_port: int, dst_port: int, payload: bytes,
 
 
 def parse_udp_header(data: bytes) -> dict:
+    if len(data) < UDP_HEADER_LEN:
+        return None
     src_port, dst_port, length, csum = struct.unpack("!HHHH", data[:UDP_HEADER_LEN])
+    if length < UDP_HEADER_LEN or length > len(data):
+        return None
     return {
         "src_port": src_port,
         "dst_port": dst_port,

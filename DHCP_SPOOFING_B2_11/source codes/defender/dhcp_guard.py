@@ -39,20 +39,21 @@ def is_trusted(trusted, mac: str, ip: str, server_id) -> bool:
 
 
 class Enforcer:
-    def __init__(self, trusted):
+    def __init__(self, iface, trusted):
+        self.iface = iface
         self.trusted = trusted
         self.active = False
 
     def install(self):
         subprocess.run(
-            ["iptables", "-I", "INPUT", "-p", "udp", "--sport", "67",
+            ["iptables", "-I", "INPUT", "-i", self.iface, "-p", "udp", "--sport", "67",
             "-m", "comment", "--comment", IPTABLES_COMMENT, "-j", "DROP"],
             check=True,
         )
-        for mac, _ip in self.trusted:
+        for mac, ip in self.trusted:
             subprocess.run(
-                ["iptables", "-I", "INPUT", "-p", "udp", "--sport", "67",
-                "-m", "mac", "--mac-source", mac,
+                ["iptables", "-I", "INPUT", "-i", self.iface, "-p", "udp", "--sport", "67",
+                "-s", ip, "-m", "mac", "--mac-source", mac,
                 "-m", "comment", "--comment", IPTABLES_COMMENT, "-j", "ACCEPT"],
                 check=True,
             )
@@ -149,12 +150,16 @@ def main():
     if not trusted:
         sys.exit(f"No trusted servers configured in {args.trusted_file}")
 
-    enforcer = Enforcer(trusted)
-    if args.enforce:
-        enforcer.install()
-        atexit.register(enforcer.remove)
-
-    DHCPGuard(args.iface, trusted, enforcer).run()
+    enforcer = Enforcer(args.iface, trusted)
+    try:
+        if args.enforce:
+            enforcer.install()
+            atexit.register(enforcer.remove)
+        DHCPGuard(args.iface, trusted, enforcer).run()
+    finally:
+        # Also clean up immediately if the capture loop exits because of an
+        # exception, instead of relying only on interpreter shutdown.
+        enforcer.remove()
 
 
 if __name__ == "__main__":

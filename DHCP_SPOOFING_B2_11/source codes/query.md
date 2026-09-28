@@ -1031,10 +1031,13 @@ command -v ip python3 dnsmasq dhclient iptables
 
 ### 1. Clean up an earlier lab
 
-Stop any lab programs in their terminals with `Ctrl+C`. Then remove previous
-lab interfaces, bridge, and namespaces:
+Stop any lab programs in their terminals with `Ctrl+C`. Then stop any
+remaining processes **inside the lab namespaces** and remove the old lab:
 
 ```sh
+for ns in victim legit attacker; do
+  sudo ip netns pids "$ns" 2>/dev/null | xargs -r sudo kill
+done
 sudo ip link del b-victim 2>/dev/null
 sudo ip link del b-legit 2>/dev/null
 sudo ip link del b-attacker 2>/dev/null
@@ -1044,8 +1047,13 @@ sudo ip netns del legit 2>/dev/null
 sudo ip netns del attacker 2>/dev/null
 ```
 
-If you use `pkill` from `run.md`, first inspect `pgrep -af dnsmasq` so you do
-not stop an unrelated DHCP/DNS service.
+This avoids the old broad `pkill` cleanup. Start every experiment with fresh
+logs as `run.md` now does:
+
+```sh
+: > logs/attacker.log
+: > logs/dhcp_guard_alerts.log
+```
 
 ### 2. Create the isolated network
 
@@ -1189,7 +1197,7 @@ is timing-dependent.
 | Rogue reply observed | The guard logs `ROGUE DHCP OFFER` or `ROGUE DHCP ACK` with source IP `10.0.0.66`. |
 | Both respond to one request | The guard logs `RACE CONDITION: xid=... has 2 distinct DHCP servers replying`. |
 | Guard running with correct allowlist | The raw socket can still observe/log rogue packets, while iptables is intended to stop the victim networking stack accepting untrusted DHCP replies. The victim should normally receive a legitimate lease. |
-| Guard off or started too late | The rogue server may win. Its log reports `VICTIM CAPTURED`; the victim may receive `10.0.0.200–10.0.0.220` with gateway/DNS `10.0.0.66`. |
+| Guard off or started too late | The rogue server may win. Its log records `LEASE ACKNOWLEDGED (unverified acceptance)` once per unique MAC/IP lease; verify the victim address and route before treating it as accepted. |
 
 `10.0.0.1` is not a complete Internet router in this lab because forwarding
 and Internet connectivity are not configured. The meaningful result is which
@@ -1211,11 +1219,16 @@ This creates `logs/benchmark.csv` and PNG charts in `logs/plots/`.
 Stop the guard with `Ctrl+C` first so it removes its iptables rules. Stop the
 servers with `Ctrl+C`, then run the cleanup commands from step 1.
 
-## 15. How can the report show 10 DHCPDISCOVER events but 70 “victims captured”?
+## 15. How could the earlier report show 10 DHCPDISCOVER events but 70 “victims captured”?
 
-It cannot mean that 70 different victims were captured after only 10 DHCP
-discoveries. The report is using two **different event counters**, and the
-second counter is mislabeled as a victim count.
+That was a measurement bug in the earlier version of the project. It counted
+repeated forged-ACK log events as if each represented a new victim. The current
+code fixes this by recording each unique `(MAC, IP)` lease once and labelling
+it `LEASE ACKNOWLEDGED (unverified acceptance)` rather than a confirmed victim
+capture.
+
+The historical report is still incorrect: 70 log events never established 70
+different victims or 70 accepted leases.
 
 The plotting code counts a discovery only when it sees a `forged OFFER` log
 line:
